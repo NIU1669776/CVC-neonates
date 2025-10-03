@@ -10,7 +10,6 @@ import ctypes, tracemalloc
 import psutil
 import matplotlib.pyplot as plt
 
-
 cp.get_default_memory_pool().free_all_blocks()
 cp.get_default_pinned_memory_pool().free_all_blocks()
 
@@ -124,14 +123,78 @@ def temp_classifier_gpu(image):
     del cp_img, distances, indices, bar #Lo he añadido a ver si se arregla lo de la memoria
 
     cp.get_default_memory_pool().free_all_blocks()
-    return index_matrix.get(), temps.get()
+    
+    temps = temps.get()
+    if not mask_filter(temps):  # keep only if >30% hot
+        print("Skipped: less than 30% hot pixels.")
+        return None, None
+    return index_matrix.get(), temps
 
+
+def automatic_threshold(temps):
+    """
+    Compute an automatic threshold for the temperature matrix using Otsu's method.
+    
+    Parameters
+    ----------
+    temps : np.array
+        Matrix of pixel temperatures.
+    
+    Returns
+    -------
+    float
+        The temperature threshold.
+    """
+    # Normalize temps into 8-bit range (required by OpenCV)
+    norm = cv2.normalize(temps, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+    # Apply Otsu threshold
+    otsu_val, _ = cv2.threshold(norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Map threshold back to temperature scale
+    t_min, t_max = np.min(temps), np.max(temps)
+    real_thresh = t_min + (otsu_val / 255.0) * (t_max - t_min)
+
+    return real_thresh
+
+
+def mask_filter(temps):
+    '''
+    Finds if more than 30% of the image is below the Otsu threshold.
+    '''
+    threshold = automatic_threshold(temps)
+
+    # Fraction of pixels above threshold
+    frac_above = np.sum(temps > threshold) / temps.size
+
+    return frac_above > 0.3
+    
 if __name__ == "__main__":
-    print("Version de Python: ", os.sys.version)
-    print("Version de Cupy: ", cp.__version__)
-    print("Version de OpenCV: ", cv2.__version__)
-    print("Version de Numpy: ", np.__version__)
-    print("Version de EasyOCR: ", easyocr.__version__)
-    print("Version de Mediapipe: ", mp.__version__)
-    print("Version de OS: ", os.name)
-    print("Get Cuda Device Count:",cp.cuda.runtime.getDeviceCount())
+    image_folder = "/home/sortegac/Sepsis_Prediction/finished_jsons/TODO_JSONS"
+    images = glob.glob(os.path.join(image_folder, "*.jpeg"))
+    images = [img for img in images if not img.endswith("_OG.jpeg")]
+
+    print(f"Found {len(images)} images to process.")
+
+    for image_path in images:
+        image_name = os.path.basename(image_path).replace(".jpeg", "")
+        json_path = os.path.join(image_folder, f"{image_name}.json")
+
+        print(f"Processing image: {image_name}")
+
+        if os.path.exists(json_path):
+            print(f"Found corresponding JSON file: {json_path}")
+            image = cv2.imread(image_path)
+            _, temp_matrix = temp_classifier_gpu(image)
+
+            with open(json_path, "r") as json_file:
+                data = json.load(json_file)
+
+            data["thermal_map"] = temp_matrix.tolist()
+
+            with open(json_path, "w") as json_file:
+                json.dump(data, json_file)
+
+            print(f"Updated JSON file: {json_path}")
+        else:
+            print(f"No JSON file found for image: {image_name}")

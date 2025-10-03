@@ -1,43 +1,34 @@
 import os, cv2
-from scipy.ndimage import uniform_filter1d
 import numpy as np
 from datetime import datetime
 from temp_key_extraction import get_keypoint_temperature
 from bokeh.plotting import figure, show, output_file
-from bokeh.models import HoverTool, ColumnDataSource, CustomJS
+from bokeh.models import HoverTool, ColumnDataSource, CustomJS, Range1d
 from bokeh.layouts import row, column
 from bokeh.models.widgets import Button
 from bokeh.palettes import Category10
+import mediapipe as mp
 
-
-def _smooth_data(data, window_size=5):
-    """
-    Smooth the data using a moving average filter that ignores NaN values.
-    """
-    data = np.asarray(data, dtype=np.float64)
-    smoothed = np.full_like(data, np.nan)
-
-    half = window_size // 2
-    for i in range(len(data)):
-        start = max(0, i - half)
-        end = min(len(data), i + half + 1)
-        window_vals = data[start:end]
-        valid = window_vals[~np.isnan(window_vals)]
-        if len(valid) > 0:
-            smoothed[i] = np.mean(valid)
-
-    return smoothed
+mp_pose = mp.solutions.pose
 
 def process_folders(folders):
     """
     Process all the folders and subfolders to analyze thermal and original images.
     """
+    pose = None
     results = []
+
+    if len(folders) > 1:
+        pose = mp_pose.Pose(static_image_mode=False)
 
     for folder in folders:
         for root, _, files in os.walk(folder):
             print(f"Processing folder: {root}")
             print(f"Number of files found: {len(files)}")
+
+            if len(files)>1 and pose is None:
+                pose = mp_pose.Pose(static_image_mode=False)
+            
             # Filter thermal and original images
             thermals = sorted([f for f in files if not f.endswith(".VIS.jpeg") and f.endswith(".jpeg")])
             originals = sorted([f for f in files if f.endswith(".VIS.jpeg")])
@@ -57,8 +48,8 @@ def process_folders(folders):
                     
                     # Call the function and store the result
                     print(f"Processing pair: {thermal_path} and {original_path}")
-                    result, _ = get_keypoint_temperature(thermal_img, original_img)
-                    #print(f"Result: {result}")
+                    result, _ = get_keypoint_temperature(thermal_img, original_img, pose)
+                    print(f"Result: {result}")
                     results.append((thermal_path, result))
 
     # Sort results by the thermal image path (timeline order)
@@ -95,11 +86,21 @@ def _extract_datetime_from_filename(path):
     except Exception as e:
         print(f"Warning: could not parse datetime from {fname} ({e})")
         return None
-
+    
+    
 def plot_results(results):
     """
-    Plot the results based on the timeline for each keypoint using interactive Bokeh plots.
+    Plot the results based on the timeline for each keypoint using interactive Bokeh plots,
+    with the corresponding original images displayed every 5 points, centered on their timestamps.
     """
+    from bokeh.plotting import figure, show, output_file
+    from bokeh.models import HoverTool, ColumnDataSource, CustomJS, Range1d
+    from bokeh.layouts import column
+    from bokeh.palettes import Category10
+    from bokeh.events import Reset
+    import numpy as np
+    import os
+
     # Extract keypoints from first valid result
     keypoints = []
     for _, res in results:
@@ -126,15 +127,11 @@ def plot_results(results):
                 col.append(_safe_val(res.get(keypoint)))
             else:
                 col.append(np.nan)
-
-        print("Before smoothing:", col)
-        col = _smooth_data(col, window_size=3)
-        print("After smoothing:", col)
         data[keypoint] = col
 
     source = ColumnDataSource(data=data)
 
-    # Create figure (full screen, datetime x-axis)
+    # --- Main plot (temperature over time) ---
     p = figure(title="Temperature Keypoints Over Time",
                x_axis_type="datetime",
                x_axis_label="Timestamp",
@@ -155,7 +152,7 @@ def plot_results(results):
                                  color=color, legend_label=keypoint, name=keypoint,
                                  visible=True)
         # Circle markers only at valid points
-        circles[keypoint] = p.scatter('timestamps', keypoint,
+        circles[keypoint] = p.circle('timestamps', keypoint,
                                      source=source, size=6,
                                      color=color, alpha=0.9, line_color=None,
                                      name=keypoint, visible=True)
@@ -174,7 +171,6 @@ def plot_results(results):
     p.add_tools(hover)
 
     # Reset event: restore all lines
-    from bokeh.events import Reset
     p.js_on_event(Reset, CustomJS(args=dict(lines=lines, circles=circles), code="""
         for (const k in lines) {
             lines[k].visible = true;
@@ -182,30 +178,55 @@ def plot_results(results):
         }
     """))
 
-    # Buttons (left): show only the selected keypoint (line + circles)
-    buttons = []
-    for keypoint in keypoints:
-        button = Button(label=f"Show {keypoint}", width=150)
-        button.js_on_click(CustomJS(args=dict(lines=lines, circles=circles, kp=keypoint), code="""
-            for (const k in lines) {
-                const show = (k === kp);
-                lines[k].visible = show;
-                circles[k].visible = show;
-            }
-        """))
-        buttons.append(button)
+    # --- Image subplot ---
+    urls, xs, ys = [], [], []
+    for i, (path, _) in enumerate(results):
+        if i % 5 == 0:  # every 5th point
+            original_path = path.replace(".jpeg", ".VIS.jpeg")
+            if os.path.exists(original_path):
+                urls.append(original_path)
+                xs.append(timestamps[i])
+                ys.append(0.5)  # vertical position (center in [0,1])
 
-    # Layout: buttons on the left, plot on the right
-    sidebar = column(*buttons, sizing_mode="fixed")
-    layout = row(sidebar, p, sizing_mode="stretch_both")
+    if urls:
+        img_source = ColumnDataSource(data=dict(url=urls, x=xs, y=ys))
+
+        # Estimate median step (ms) between timestamps for scaling width
+        diffs = np.diff([dt.timestamp() for dt in timestamps if dt is not None])
+        median_step = np.median(diffs) * 1000 if len(diffs) else 60000  # fallback: 1 minute in ms
+
+        img_plot = figure(x_axis_type="datetime",
+                          x_range=p.x_range,
+                          y_range=Range1d(0, 1),
+                          height=180,
+                          sizing_mode="stretch_width",
+                          toolbar_location=None)
+
+        # Maintain correct aspect ratio (408x544)
+        fixed_w = int(median_step * 4)  # width in ms (data units)
+        fixed_h = 0.8  # relative to y_range [0,1]
+
+        img_plot.image_url(url="url",
+                           x="x", y="y",
+                           w=fixed_w, h=fixed_h,
+                           anchor="center",   # <-- center at timestamp
+                           source=img_source)
+
+        img_plot.yaxis.visible = False
+        img_plot.xaxis.visible = False
+        img_plot.grid.visible = False
+
+        layout = column(p, img_plot, sizing_mode="stretch_both")
+    else:
+        layout = column(p, sizing_mode="stretch_both")
 
     # Save to HTML and open in browser
     output_file("keypoints_plot.html")
     show(layout)
+
 
 # Example usage
 if __name__ == "__main__":
     folders = ["Trial_folder"]
     print("Processing folders:", folders)
     process_folders(folders)
-#"images/40/24.10.24-25.10.24/","images/40/25.10.24/","images/40/25.10.24 (2)/"

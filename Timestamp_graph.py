@@ -1,32 +1,13 @@
 import os, cv2
-from scipy.ndimage import uniform_filter1d
 import numpy as np
 from datetime import datetime
 from temp_key_extraction import get_keypoint_temperature
+
 from bokeh.plotting import figure, show, output_file
 from bokeh.models import HoverTool, ColumnDataSource, CustomJS
 from bokeh.layouts import row, column
 from bokeh.models.widgets import Button
 from bokeh.palettes import Category10
-
-
-def _smooth_data(data, window_size=5):
-    """
-    Smooth the data using a moving average filter that ignores NaN values.
-    """
-    data = np.asarray(data, dtype=np.float64)
-    smoothed = np.full_like(data, np.nan)
-
-    half = window_size // 2
-    for i in range(len(data)):
-        start = max(0, i - half)
-        end = min(len(data), i + half + 1)
-        window_vals = data[start:end]
-        valid = window_vals[~np.isnan(window_vals)]
-        if len(valid) > 0:
-            smoothed[i] = np.mean(valid)
-
-    return smoothed
 
 def process_folders(folders):
     """
@@ -58,7 +39,7 @@ def process_folders(folders):
                     # Call the function and store the result
                     print(f"Processing pair: {thermal_path} and {original_path}")
                     result, _ = get_keypoint_temperature(thermal_img, original_img)
-                    #print(f"Result: {result}")
+                    print(f"Result: {result}")
                     results.append((thermal_path, result))
 
     # Sort results by the thermal image path (timeline order)
@@ -126,10 +107,6 @@ def plot_results(results):
                 col.append(_safe_val(res.get(keypoint)))
             else:
                 col.append(np.nan)
-
-        print("Before smoothing:", col)
-        col = _smooth_data(col, window_size=3)
-        print("After smoothing:", col)
         data[keypoint] = col
 
     source = ColumnDataSource(data=data)
@@ -155,7 +132,7 @@ def plot_results(results):
                                  color=color, legend_label=keypoint, name=keypoint,
                                  visible=True)
         # Circle markers only at valid points
-        circles[keypoint] = p.scatter('timestamps', keypoint,
+        circles[keypoint] = p.circle('timestamps', keypoint,
                                      source=source, size=6,
                                      color=color, alpha=0.9, line_color=None,
                                      name=keypoint, visible=True)
@@ -205,7 +182,6 @@ def plot_results(results):
 
 # Example usage
 if __name__ == "__main__":
-    folders = ["Trial_folder"]
+    folders = ["Trial_folder_4"]
     print("Processing folders:", folders)
     process_folders(folders)
-#"images/40/24.10.24-25.10.24/","images/40/25.10.24/","images/40/25.10.24 (2)/"

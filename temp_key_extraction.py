@@ -1,11 +1,11 @@
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
-
 from thermal import temp_classifier_gpu as temp_classifier
-from keypoints import get_keypoints, check_borders
+from keypoints import get_keypoints_sequence, get_keypoints_static, check_borders
+import os
 
-def get_keypoint_temperature (img_thermal, img_og):
+def get_keypoint_temperature (img_thermal, img_og, sequence_pose=None):
     '''
     Extracts the temperature of the keypoints of a thermal image. 
     
@@ -32,9 +32,23 @@ def get_keypoint_temperature (img_thermal, img_og):
         None. Same structure as key_points from function get_keypoints().
     '''
  
-    keypoints = get_keypoints(img_og)
+    # 🔍 DEBUG: imprime info sobre las imágenes que entran
+    print("DEBUG - Starting get_keypoint_temperature")
+    print("DEBUG - Path exists for thermal image:", img_thermal is not None)
+    print("DEBUG - Path exists for original image:", img_og is not None)
+    print("DEBUG - thermal image shape:", None if img_thermal is None else img_thermal.shape)
+    print("DEBUG - original image shape:", None if img_og is None else img_og.shape)
 
-    if keypoints == None:
+    # intentar detectar keypoints directamente
+    if sequence_pose is None:
+        raw_keypoints = get_keypoints_static(img_og)
+    else:
+        raw_keypoints = get_keypoints_sequence(img_og,sequence_pose)
+
+    print("DEBUG - raw keypoints from get_keypoints:", raw_keypoints)
+
+    keypoints = raw_keypoints
+    if keypoints is None:
         print("No keypoints found in the original image.")
         return None, None
     
@@ -86,15 +100,26 @@ def get_keypoint_temperature (img_thermal, img_og):
         return temp_vals, derived_kpoints
     
 if __name__ == "__main__":
-    thermal_img_path = "images/referenced_images/IMG2.png"
-    og_img_path = "images/referenced_images/IMG2_OG.png"
+    thermal_img_path = "images/40/25.10.24 (2)/HM20241025150105.jpeg"
+    og_img_path = "images/40/25.10.24 (2)/HM20241025150105.VIS.jpeg"
 
     thermal_img = cv2.imread(thermal_img_path)
     og_img = cv2.imread(og_img_path)
+    if not os.path.exists(thermal_img_path):
+        print(f"Thermal image not found at {thermal_img_path}")
+        exit()
+
+    
+    plt.imshow(cv2.cvtColor(og_img, cv2.COLOR_BGR2RGB))
+    plt.show()
+
+    if not os.path.exists(og_img_path):
+        print(f"Original image not found at {og_img_path}")
+        exit()
 
     temps, kpoints = get_keypoint_temperature(thermal_img, og_img)
-    print("Temperatures at keypoints:", temps)
-    print("Keypoints in thermal image:", kpoints)
+    print("DEBUG - Temperatures at keypoints:", temps)
+    print("DEBUG - Keypoints in thermal image:", kpoints)
 
     # Plot the thermal image with the derived keypoints
     show = "Thermal"  # Change to "Original" to see the original image with keypoints
@@ -114,7 +139,7 @@ if __name__ == "__main__":
             plt.title("Thermal Image with Derived Keypoints")
             plt.show()
     elif show == "Original":
-        kpoints = get_keypoints(og_img)
+        kpoints = get_keypoints_static(og_img)
         if kpoints != None:
             plt.imshow(cv2.cvtColor(og_img, cv2.COLOR_BGR2RGB))
             colors = {
