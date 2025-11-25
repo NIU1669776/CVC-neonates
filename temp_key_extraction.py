@@ -5,6 +5,44 @@ from thermal import temp_classifier_gpu as temp_classifier
 from keypoints import get_keypoints_sequence, get_keypoints_static, check_borders
 import os
 
+def rgb_thermal_projection(x_big, y_big):
+    """
+    Maps a point (x_big, y_big) from the big RGB image to the small (cropped & resized) image.
+    Returns (x_small, y_small) or None if point is outside the crop.
+
+
+    Crop and small image sizes are hardcoded from previous calculations.
+    """
+    # --- Crop coordinates ---
+    x0, y0 = 500, 350
+    x1, y1 = 2745, 2034 # x1 = x0 + 2245, y1 = y0 + 1684
+
+
+    # --- Small image size ---
+    W_small, H_small = 640, 480
+
+
+    # Check if point is inside the crop
+    if x_big < x0 or x_big > x1 or y_big < y0 or y_big > y1:
+        return None, None # Point is outside the crop
+
+
+    # Shift to crop coordinates
+    x_crop = x_big - x0
+    y_crop = y_big - y0
+
+
+    # Scale to small image
+    scale_x = W_small / (x1 - x0)
+    scale_y = H_small / (y1 - y0)
+
+
+    x_small = x_crop * scale_x
+    y_small = y_crop * scale_y
+
+
+    return x_small, y_small
+
 def get_keypoint_temperature (img_thermal, img_og, sequence_pose=None):
     '''
     Extracts the temperature of the keypoints of a thermal image. 
@@ -31,13 +69,6 @@ def get_keypoint_temperature (img_thermal, img_og, sequence_pose=None):
         Dictionary containing the coordinates for each keypoint in the thermal image. If there is no baby, it returns
         None. Same structure as key_points from function get_keypoints().
     '''
- 
-    # 🔍 DEBUG: imprime info sobre las imágenes que entran
-    print("DEBUG - Starting get_keypoint_temperature")
-    print("DEBUG - Path exists for thermal image:", img_thermal is not None)
-    print("DEBUG - Path exists for original image:", img_og is not None)
-    print("DEBUG - thermal image shape:", None if img_thermal is None else img_thermal.shape)
-    print("DEBUG - original image shape:", None if img_og is None else img_og.shape)
 
     # intentar detectar keypoints directamente
     if sequence_pose is None:
@@ -63,36 +94,40 @@ def get_keypoint_temperature (img_thermal, img_og, sequence_pose=None):
 
         #print("Keypoints found in the original image:", keypoints)
 
+        # Map keypoints to thermal image coordinates
 
         derived_kpoints = keypoints.copy()
         if derived_kpoints != None:
             for sec_name, section in keypoints.items():
                 for name,coord in section.items(): # 
-                    new_x = (coord[0]-587)*0.2733
-                    new_y = (coord[1]-411)*0.2733
+                    new_x, new_y = rgb_thermal_projection(coord[0],coord[1])
                     derived_kpoints[sec_name][name] = np.array([new_x,new_y])
-
-            #print("Derived keypoints found:", derived_kpoints)
-            #print("Image shape:", img_thermal.shape)
-            #print("")
 
             _, temps = temp_classifier(img_thermal)
 
-            temp_vals = {}
-            for section in derived_kpoints.values():
-                for name,coord in section.items():
-                    if check_borders(coord,(0,0),(img_thermal.shape[0],img_thermal.shape[1])):
-                        temp_vals[name] = round(temps[int(coord[1])][int(coord[0])],3)
-                        '''
-                        if temp_vals[name]>=max(30,np.max(temps)-5):
-                            #print("Temperatura",name,":",temp_vals[name])
+
+            if temps is not None:
+                temp_vals = {}
+                for section in derived_kpoints.values():
+                    for name,coord in section.items():
+                        if coord[0] is not None and coord[1] is not None:
+                            print("DEBUG - Mapped coord for", name, ":", coord)
+                            print("DEBUG - Image shape:", img_thermal.shape)
+                            print("DEBUG - Temp map", temps)
+                            temp_vals[name] = round(temps[int(coord[1])][int(coord[0])],3)
+
+                            '''
+                            if temp_vals[name]>=max(30,np.max(temps)-5):
+                                #print("Temperatura",name,":",temp_vals[name])
+                            else:
+                                print("Temperatura",name,":",temp_vals[name],"(No concluyente)")
+                                #temp_vals[name] = None
+                            '''
                         else:
-                            print("Temperatura",name,":",temp_vals[name],"(No concluyente)")
-                            #temp_vals[name] = None
-                        '''
-                    else:
-                        #print("Temperatura",name,": Se sale de la imagen")
-                        temp_vals[name] = None
+                            #print("Temperatura",name,": Se sale de la imagen")
+                            temp_vals[name] = None
+            else:
+                temp_vals = None
         else:
             temp_vals, derived_kpoints = None, None
 

@@ -167,7 +167,7 @@ def mask_filter(temps):
     # Fraction of pixels above threshold
     frac_above = np.sum(temps > threshold) / temps.size
 
-    return frac_above > 0.3
+    return frac_above > 0.1
     
 if __name__ == "__main__":
     image_folder = "/home/sortegac/Sepsis_Prediction/finished_jsons/TODO_JSONS"
